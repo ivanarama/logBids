@@ -20,8 +20,16 @@ services:
       - db
     ports:
       - "8000:8000"
-    environment:
-      - TZ=Europe/Moscow   # чтобы cron запускался в нужное время
+    volumes:
+      - .:/app   # код меняем на лету
+  
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
 
 volumes:
   postgres_data:

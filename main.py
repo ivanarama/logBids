@@ -1,93 +1,122 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
 from datetime import datetime
-from apscheduler.schedulers.background import BackgroundScheduler
+from sqlalchemy import create_engine, Column, Integer, String, DateTime
+from sqlalchemy.orm import declarative_base, sessionmaker
 import pandas as pd
 import smtplib
 from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
+from email.mime.application import MIMEApplication
+from apscheduler.schedulers.background import BackgroundScheduler
+from config import settings
+import asyncio
+import ssl
+from email.message import EmailMessage
+from email.utils import formataddr
 
-from sqlalchemy import create_engine, Column, String, DateTime, Integer
-from sqlalchemy.orm import sessionmaker, declarative_base
-
-# ---------- Настройки ----------
-DATABASE_URL = "postgresql+psycopg2://postgres:postgres@db:5432/mydb"
-
-EMAIL_FROM = "your_email@gmail.com"
-EMAIL_TO = "receiver@example.com"
-EMAIL_PASSWORD = "your_app_password"
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-
-# ---------- База данных ----------
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# --- DB setup ---
+engine = create_engine(settings.DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
+
+app = FastAPI()
 
 class Bid(Base):
     __tablename__ = "bids"
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    bidid = Column(String, nullable=False)
-    biddate = Column(DateTime, nullable=False)
-    direction = Column(String, nullable=False)
-    branch = Column(String, nullable=False)
+    id = Column(Integer, primary_key=True, index=True)
+    bidid = Column(String, index=True)
+    biddate = Column(DateTime)
+    direction = Column(String)
+    branch = Column(String)
 
 Base.metadata.create_all(bind=engine)
 
-# ---------- FastAPI ----------
-app = FastAPI()
+# --- Pydantic model ---
+class BidRequest(BaseModel):
+    bidid: str
+    biddate: datetime
+    direction: str
+    branch: str
 
+# --- API add_bid ---
 @app.post("/add_bid/")
-def add_bid(bidid: str, biddate: datetime, direction: str, branch: str):
+async def add_bid(bid: BidRequest, authorization: str = Header(...)):
+    if authorization != settings.SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
     db = SessionLocal()
-    bid = Bid(bidid=bidid, biddate=biddate, direction=direction, branch=branch)
-    db.add(bid)
+    new_bid = Bid(
+        bidid=bid.bidid,
+        biddate=bid.biddate,
+        direction=bid.direction,
+        branch=bid.branch
+    )
+    db.add(new_bid)
     db.commit()
-    db.refresh(bid)
+    db.refresh(new_bid)
     db.close()
-    return {"status": "ok", "id": bid.id}
+    return {"status": "ok", "id": new_bid.id}
 
-@app.get("/send_report_now/")
-def send_report_now():
-    generate_and_send_report()
-    return {"status": "report sent"}
-
-# ---------- Отчёт + почта ----------
-def generate_and_send_report():
+# --- Отчёт ---
+async def generate_and_send_report():
     db = SessionLocal()
-    bids = db.query(Bid).all()
+    rows = db.query(Bid.branch).all()
     db.close()
 
-    if not bids:
+    if not rows:
         return
 
-    data = [{"bidid": b.bidid, "biddate": b.biddate, "direction": b.direction, "branch": b.branch} for b in bids]
-    df = pd.DataFrame(data)
+    df = pd.DataFrame(rows, columns=["branch"])
+    report = df.groupby("branch").size().reset_index(name="count")
 
-    grouped = df.groupby("branch").size().reset_index(name="count")
+    # сохранить в Excel
+    filename = "/tmp/report.xlsx"
+    report.to_excel(filename, index=False)
 
-    file_path = "report.xlsx"
-    grouped.to_excel(file_path, index=False)
+    # список получателей из .env (через запятую)
+    email_addresses = [e.strip() for e in settings.REPORT_EMAIL_TO.split(",") if e.strip()]
+    if not email_addresses:
+        print("Нет email-адресов для отправки")
+        return
 
-    msg = MIMEMultipart()
-    msg['From'] = EMAIL_FROM
-    msg['To'] = EMAIL_TO
-    msg['Subject'] = "Daily Report"
+    def _send():
+        msg = EmailMessage()
+        msg["Subject"] = "Ежедневный отчёт"
+        msg["From"] = formataddr(("А-Айсберг", settings.SMTP_USER))
+        msg["To"] = ", ".join(email_addresses)
+        msg.set_content("В приложении ежедневный отчёт", subtype="plain", charset="utf-8")
 
-    part = MIMEBase('application', 'octet-stream')
-    with open(file_path, "rb") as f:
-        part.set_payload(f.read())
-    encoders.encode_base64(part)
-    part.add_header('Content-Disposition', f'attachment; filename=report.xlsx')
-    msg.attach(part)
+        # прикрепляем Excel
+        with open(filename, "rb") as f:
+            file_data = f.read()
+            msg.add_attachment(
+                file_data,
+                maintype="application",
+                subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                filename="report.xlsx"
+            )
 
-    server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-    server.starttls()
-    server.login(EMAIL_FROM, EMAIL_PASSWORD)
-    server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
-    server.quit()
+        try:
+            ctx = ssl.create_default_context()
+            with smtplib.SMTP_SSL(settings.SMTP_SERVER, int(settings.SMTP_PORT), timeout=30, context=ctx) as server:
+                server.ehlo()
+                server.login(settings.SMTP_USER, settings.SMTP_PASS)  # пароль приложения Gmail
+                server.send_message(msg)
+                print(f"Письмо отправлено на: {', '.join(email_addresses)}")
+        except smtplib.SMTPAuthenticationError:
+            print("Ошибка аутентификации: проверь пароль приложения Gmail")
 
-# ---------- Планировщик ----------
+    # неблокирующий вызов
+    await asyncio.to_thread(_send)
+
+# --- ручной запуск отчёта ---
+@app.post("/send_report_now/")
+async def  send_report_now(authorization: str = Header(...)):
+    if authorization != settings.SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    await generate_and_send_report()
+    return {"status": "ok", "message": "report sent"}
+
+# --- планировщик ---
 scheduler = BackgroundScheduler()
-scheduler.add_job(generate_and_send_report, 'cron', hour=23, minute=59)
+scheduler.add_job(generate_and_send_report, "cron", hour=23, minute=59)
 scheduler.start()
