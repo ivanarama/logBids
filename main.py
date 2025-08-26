@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, field_validator
 from datetime import datetime
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, func
@@ -73,12 +73,13 @@ async def add_bid(bid: BidRequest, authorization: str = Header(...)):
     return {"status": "ok", "id": new_bid.id}
 
 # --- Отчёт ---
-async def generate_and_send_report():
-    today = date.today()
+async def generate_and_send_report(report_date: date | None = None):
+    if report_date is None:
+        report_date = date.today()
     db = SessionLocal()
     rows = db.query(
         Bid.branch, Bid.direction, Bid.bidid, Bid.biddate, Bid.created_at
-    ).filter(Bid.created_at.cast(Date) == today).order_by(
+    ).filter(Bid.created_at.cast(Date) == report_date).order_by(
         Bid.branch, Bid.direction, Bid.biddate
     ).all()
     db.close()
@@ -184,11 +185,20 @@ async def generate_and_send_report():
     await asyncio.to_thread(_send)
 
 # --- ручной запуск отчёта ---
-@app.post("/send_report_now/")
-async def  send_report_now(authorization: str = Header(...)):
+@app.post("/send_report_now")
+async def  send_report_now(report_date: str | None = Query(None),authorization: str = Header(...)):
     if authorization != settings.SECRET_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    await generate_and_send_report()
+    
+      # Определяем дату
+    if report_date:
+        try:
+            report_date_obj = datetime.strptime(report_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Неверный формат даты, нужен YYYY-MM-DD")
+    else:
+        report_date_obj = date.today()
+    await generate_and_send_report(report_date_obj)
     return {"status": "ok", "message": "report sent"}
 
 # --- планировщик ---
