@@ -13,7 +13,10 @@ import asyncio
 import ssl
 from email.message import EmailMessage
 from email.utils import formataddr
-
+from datetime import date
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment
+from sqlalchemy import Date
 # --- DB setup ---
 engine = create_engine(settings.DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
@@ -71,19 +74,78 @@ async def add_bid(bid: BidRequest, authorization: str = Header(...)):
 
 # --- Отчёт ---
 async def generate_and_send_report():
+    today = date.today()
     db = SessionLocal()
-    rows = db.query(Bid.branch).all()
+    rows = db.query(
+        Bid.branch, Bid.direction, Bid.bidid, Bid.biddate, Bid.created_at
+    ).filter(Bid.created_at.cast(Date) == today).order_by(
+        Bid.branch, Bid.direction, Bid.biddate
+    ).all()
     db.close()
 
     if not rows:
+        print("Нет заявок за сегодня")
         return
 
-    df = pd.DataFrame(rows, columns=["branch"])
-    report = df.groupby("branch").size().reset_index(name="count")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Отчёт"
 
-    # сохранить в Excel
+    ws.append(["Филиал", "Направление", "Номер", "Дата", "Запись сделана"])
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center")
+
+    row_idx = 2
+    current_branch = None
+    current_direction = None
+    branch_count = 0
+    direction_count = 0
+    branch_start_idx = row_idx
+    direction_start_idx = row_idx
+
+    # Считаем кол-во заранее
+    from collections import defaultdict
+    branch_counts = defaultdict(int)
+    direction_counts = defaultdict(int)
+    for branch, direction, *_ in rows:
+        branch_counts[branch] += 1
+        direction_counts[(branch, direction)] += 1
+
+    for branch, direction, bidid, biddate, created_at in rows:
+        # Branch
+        if branch != current_branch:
+            current_branch = branch
+            branch_count = branch_counts[branch]
+            ws.append([f"{branch} ({branch_count})"])
+            ws[row_idx][0].font = Font(bold=True)
+            row_idx += 1
+
+        # Direction
+        if direction != current_direction:
+            current_direction = direction
+            direction_count = direction_counts[(branch, direction)]
+            ws.append(["", f"{direction} ({direction_count})"])
+            ws[row_idx][1].font = Font(italic=True)
+            row_idx += 1
+
+        # Заявка
+        ws.append(["", "", bidid, biddate.strftime("%d.%m.%Y %H:%M:%S"), created_at.strftime("%d.%m.%Y %H:%M:%S")])
+        row_idx += 1
+
+    # Автоширина колонок
+    from openpyxl.utils import get_column_letter
+    for col in ws.columns:
+        max_len = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            if cell.value:
+                max_len = max(max_len, len(str(cell.value)))
+        ws.column_dimensions[col_letter].width = max_len + 2
+
+    # Сохраняем файл
     filename = "/tmp/report.xlsx"
-    report.to_excel(filename, index=False)
+    wb.save(filename)
 
     # список получателей из .env (через запятую)
     email_addresses = [e.strip() for e in settings.REPORT_EMAIL_TO.split(",") if e.strip()]
