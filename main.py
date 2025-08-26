@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, func
 from sqlalchemy.orm import declarative_base, sessionmaker
 import pandas as pd
 import smtplib
@@ -28,6 +28,8 @@ class Bid(Base):
     biddate = Column(DateTime)
     direction = Column(String)
     branch = Column(String)
+    source_id = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 Base.metadata.create_all(bind=engine)
 
@@ -37,6 +39,15 @@ class BidRequest(BaseModel):
     biddate: datetime
     direction: str
     branch: str
+    source_id: str 
+    @field_validator("biddate", mode="before")
+    def parse_biddate(cls, v):
+        if isinstance(v, str):
+            try:
+                return datetime.strptime(v, "%d.%m.%Y %H:%M:%S")
+            except ValueError:
+                raise ValueError("biddate must be in format DD.MM.YYYY HH:MM:SS")
+        return v
 
 # --- API add_bid ---
 @app.post("/add_bid/")
@@ -48,7 +59,9 @@ async def add_bid(bid: BidRequest, authorization: str = Header(...)):
         bidid=bid.bidid,
         biddate=bid.biddate,
         direction=bid.direction,
-        branch=bid.branch
+        branch=bid.branch,
+        source_id=bid.source_id   # сохраняем в БД
+        # created_at ставится автоматически
     )
     db.add(new_bid)
     db.commit()
