@@ -203,5 +203,5 @@ async def  send_report_now(report_date: str | None = Query(None),authorization: 
 
 # --- планировщик ---
 scheduler = BackgroundScheduler()
-scheduler.add_job(generate_and_send_report, "cron", hour=23, minute=59)
+scheduler.add_job(generate_and_send_report, "cron", hour=23, minute=10,misfire_grace_time=3600)
 scheduler.start()
