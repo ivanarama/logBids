@@ -159,7 +159,7 @@ async def generate_and_send_report(report_date: date | None = None):
         msg["Subject"] = "Ежедневный отчёт"
         msg["From"] = formataddr(("А-Айсберг", settings.SMTP_USER))
         msg["To"] = ", ".join(email_addresses)
-        msg.set_content("В приложении ежедневный отчёт", subtype="plain", charset="utf-8")
+        msg.set_content("В приложении ежедневный отчёт по принятым заявкам", subtype="plain", charset="utf-8")
 
         # прикрепляем Excel
         with open(filename, "rb") as f:
