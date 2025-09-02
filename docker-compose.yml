@@ -13,16 +13,26 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  app:
+  app-api:
     build: .
     restart: always
     depends_on:
       - db
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
     ports:
       - "8001:8000"
     volumes:
       - .:/app   # код меняем на лету
-  
+
+  app-worker:
+    build: .
+    restart: always
+    depends_on:
+      - db
+    command: python worker.py
+    volumes:
+      - .:/app   # чтобы видеть изменения в reports.py
+
   adminer:
     image: adminer
     restart: always
