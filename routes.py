@@ -42,6 +42,7 @@ async def add_bid(bid: BidRequest, authorization: str = Header(...)):
 
 async def send_report_now(
     report_date: str | None = Query(None),
+    debug: bool = Query(False),
     authorization: str = Header(...),
 ):
     if authorization != settings.SECRET_KEY:
@@ -55,5 +56,5 @@ async def send_report_now(
     else:
         report_date_obj = date.today()
 
-    await generate_and_send_report(report_date_obj)
+    await generate_and_send_report(report_date_obj,debug)
     return {"status": "ok", "message": "report sent"}
