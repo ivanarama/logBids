@@ -68,7 +68,32 @@ async def generate_and_send_report(report_date: date | None = None, debug: bool 
     row_idx = 2
     group_info = []
 
-    for branch, directions in tree.items():
+    # Кастомный порядок филиалов
+    branch_order = {
+        "МСК": 1,
+        "СПБ": 2,
+        "ННОВ": 3,
+        "РнД": 4,
+        "КРД": 5,
+        "ВРН": 6,
+        "ЕКБ": 7,
+        "НСК": 8,
+        "ЛПЦ": 9,
+        "КЗН": 10,
+        "САМ": 11,
+        "УФА": 12,
+        "ОМС": 13,
+        "КРЯ": 14,
+        "ПРМ": 15,
+        "ВГГ": 16,
+        "ТМН": 17,
+        "СРТ": 18,
+        "ЧЛБ": 19,
+    }
+    sorted_branches = sorted(tree.keys(), key=lambda b: (branch_order.get(b, 10_000), str(b)))
+
+    for branch in sorted_branches:
+        directions = tree[branch]
         # branch header
         b_total = branch_stats[branch]["total"]
         b_repeat = branch_stats[branch]["repeat"]
