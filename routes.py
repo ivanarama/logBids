@@ -11,8 +11,8 @@ class BidRequest(BaseModel):
     direction: str
     branch: str
     source_id: str
-    isrepeat: bool
-    ispartner: bool
+    isrepeat: bool = False
+    ispartner: bool = False
 
     @field_validator("biddate", mode="before")
     def parse_biddate(cls, v):
