@@ -12,6 +12,7 @@ class BidRequest(BaseModel):
     branch: str
     source_id: str
     isrepeat: bool
+    ispartner: bool
 
     @field_validator("biddate", mode="before")
     def parse_biddate(cls, v):
@@ -25,6 +26,10 @@ class BidRequest(BaseModel):
 async def add_bid(bid: BidRequest, authorization: str = Header(...)):
     if authorization != settings.SECRET_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    # Отладка: что пришло
+    print(f"DEBUG: Получено ispartner={bid.ispartner}, тип={type(bid.ispartner)}")
+    
     db = SessionLocal()
     new_bid = Bid(
         bidid=bid.bidid,
@@ -32,11 +37,20 @@ async def add_bid(bid: BidRequest, authorization: str = Header(...)):
         direction=bid.direction,
         branch=bid.branch,
         isrepeat=bid.isrepeat,
+        ispartner=bid.ispartner,
         source_id=bid.source_id
     )
+    
+    # Отладка: что в объекте перед сохранением
+    print(f"DEBUG: В объекте ispartner={new_bid.ispartner}")
+    
     db.add(new_bid)
     db.commit()
     db.refresh(new_bid)
+    
+    # Отладка: что сохранилось в БД
+    print(f"DEBUG: После сохранения ispartner={new_bid.ispartner}")
+    
     db.close()
     return {"status": "ok", "id": new_bid.id}
 

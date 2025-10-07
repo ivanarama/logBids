@@ -15,6 +15,7 @@ class Bid(Base):
     direction = Column(String)
     branch = Column(String)
     isrepeat = Column(Boolean, nullable=False, server_default="false")
+    ispartner = Column(Boolean, nullable=False, server_default="false")
     source_id = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
