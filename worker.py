@@ -17,7 +17,7 @@ async def main():
         misfire_grace_time=3600
     )
     scheduler.start()
-    print("Worker started. Next report at 23:10 UTC")
+    print("Worker started. Next report at 23:40 UTC")
     while True:
         await asyncio.sleep(3600)
 
