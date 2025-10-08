@@ -18,7 +18,7 @@ async def generate_and_send_report(report_date: date | None = None, debug: bool 
             report_date = date.today()
 
         rows = db.query(
-            Bid.branch, Bid.direction, Bid.bidid, Bid.biddate, Bid.created_at, Bid.isrepeat
+            Bid.branch, Bid.direction, Bid.bidid, Bid.biddate, Bid.created_at, Bid.isrepeat, Bid.ispartner
         ).filter(cast(Bid.biddate, Date) == report_date).order_by(
             Bid.branch, Bid.direction, Bid.biddate
         ).all()
@@ -38,29 +38,31 @@ async def generate_and_send_report(report_date: date | None = None, debug: bool 
 
     # --- Собираем дерево branch -> direction -> bids ---
     tree = OrderedDict()
-    branch_stats = defaultdict(lambda: {"total": 0, "repeat": 0})
-    direction_stats = defaultdict(lambda: {"total": 0, "repeat": 0})
+    branch_stats = defaultdict(lambda: {"total": 0, "repeat": 0, "partner": 0})
+    direction_stats = defaultdict(lambda: {"total": 0, "repeat": 0, "partner": 0})
 
-    for branch, direction, bidid, biddate, created_at, isRepeat in rows:
+    for branch, direction, bidid, biddate, created_at, isRepeat, isPartner in rows:
         tree.setdefault(branch, OrderedDict())
-        tree[branch].setdefault(direction, []).append((bidid, biddate, created_at, isRepeat))
+        tree[branch].setdefault(direction, []).append((bidid, biddate, created_at, isRepeat, isPartner))
         branch_stats[branch]["total"] += 1
         branch_stats[branch]["repeat"] += 1 if isRepeat else 0
+        branch_stats[branch]["partner"] += 1 if isPartner else 0
         direction_stats[(branch, direction)]["total"] += 1
         direction_stats[(branch, direction)]["repeat"] += 1 if isRepeat else 0
+        direction_stats[(branch, direction)]["partner"] += 1 if isPartner else 0
 
     _dbg(f"[STATS] branches={len(tree)} directions={sum(len(d) for d in tree.values())}")
     for b, v in branch_stats.items():
-        _dbg(f"  BRANCH {b}: total={v['total']} repeat={v['repeat']}")
+        _dbg(f"  BRANCH {b}: total={v['total']} repeat={v['repeat']} partner={v['partner']}")
     for (b, d), v in direction_stats.items():
-        _dbg(f"  DIR {b} / {d}: total={v['total']} repeat={v['repeat']}")
+        _dbg(f"  DIR {b} / {d}: total={v['total']} repeat={v['repeat']} partner={v['partner']}")
 
     # --- Пишем Excel ---
     wb = Workbook()
     ws = wb.active
     ws.title = "Report"
 
-    ws.append(["Филиал", "Направление", "BidID", "BidDate", "CreatedAt", "Платные", "Повторные", "Всего"])
+    ws.append(["Филиал", "Направление", "BidID", "BidDate", "CreatedAt", "Платные", "Повторные", "Партнерские", "Всего"])
     for cell in ws[1]:
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center")
@@ -91,51 +93,59 @@ async def generate_and_send_report(report_date: date | None = None, debug: bool 
         "ЧЛБ": 19,
     }
     sorted_branches = sorted(tree.keys(), key=lambda b: (branch_order.get(b, 10_000), str(b)))
+    
+    # Фиксированный порядок направлений
+    direction_order = ["ХД", "СМ", "ПДМ", "ТВ", "ПК", "ГЖТ", "КЦ", "ПЛ", "ВТ", "ГК", "ПХ", "СВЧ", "ШМ", "УСТ", "КФМ"]
 
     for branch in sorted_branches:
         directions = tree[branch]
         # branch header
         b_total = branch_stats[branch]["total"]
         b_repeat = branch_stats[branch]["repeat"]
-        b_paid = b_total - b_repeat
+        b_partner = branch_stats[branch]["partner"]
+        b_paid = b_total - b_repeat - b_partner
 
         branch_header_row = row_idx
-        ws.append([branch, "", "", "", "", b_paid, b_repeat, b_total])
+        ws.append([branch, "", "", "", "", b_paid, b_repeat, b_partner, b_total])
         _dbg(f"[NEW BRANCH] {branch} header_row={branch_header_row}")
         row_idx += 1
 
-        for direction, bids in directions.items():
+        # Проходим по всем направлениям в фиксированном порядке
+        for direction in direction_order:
+            bids = directions.get(direction, [])
             d_total = direction_stats[(branch, direction)]["total"]
             d_repeat = direction_stats[(branch, direction)]["repeat"]
-            d_paid = d_total - d_repeat
+            d_partner = direction_stats[(branch, direction)]["partner"]
+            d_paid = d_total - d_repeat - d_partner
 
             direction_header_row = row_idx
-            ws.append(["", direction, "", "", "", d_paid, d_repeat, d_total])
+            ws.append(["", direction, "", "", "", d_paid, d_repeat, d_partner, d_total])
             _dbg(f"  [NEW DIRECTION] {direction} header_row={direction_header_row}")
             row_idx += 1
 
-            # заявки
-            first_child = row_idx
-            for bidid, biddate, created_at, isRepeat in bids:
-                biddate_s = biddate.strftime("%d.%m.%Y %H:%M:%S") if biddate else ""
-                created_s = created_at.strftime("%d.%m.%Y %H:%M:%S") if created_at else ""
-                paid_val = 0 if isRepeat else 1
-                repeat_val = 1 if isRepeat else 0
-                ws.append(["", "", bidid, biddate_s, created_s, paid_val, repeat_val, 1])
-                row_idx += 1
-            last_child = row_idx - 1
+            # заявки (только если есть)
+            if bids:
+                first_child = row_idx
+                for bidid, biddate, created_at, isRepeat, isPartner in bids:
+                    biddate_s = biddate.strftime("%d.%m.%Y %H:%M:%S") if biddate else ""
+                    created_s = created_at.strftime("%d.%m.%Y %H:%M:%S") if created_at else ""
+                    paid_val = 0 if (isRepeat or isPartner) else 1
+                    repeat_val = 1 if isRepeat else 0
+                    partner_val = 1 if isPartner else 0
+                    ws.append(["", "", bidid, biddate_s, created_s, paid_val, repeat_val, partner_val, 1])
+                    row_idx += 1
+                last_child = row_idx - 1
+            else:
+                # Нет заявок - пропускаем группировку
+                first_child = last_child = -1
 
-            if last_child >= first_child:
-
+            if last_child >= first_child and first_child > 0:
                 # defer grouping; apply after building all rows to preserve highest outline level
                 _dbg(f"    [GROUP bids] {branch} / {direction}: rows {first_child}-{last_child} (level=3, hidden=True)")
                 group_info.append(("direction-bids", branch, direction, first_child, last_child))
-                #print(f"    [GROUP bids] {branch} / {direction}: rows {first_child}-{last_child} (hidden=True)")
 
-                
                 _dbg(f"    [GROUP direction] {branch} / {direction}: rows {direction_header_row + 1}-{last_child} (level=2, hidden=False)")
                 group_info.append(("direction", branch, direction, direction_header_row + 1, last_child))
-                #print(f"    [GROUP direction] {branch} / {direction}: rows {direction_header_row + 1}-{last_child} (hidden=False)")
 
         # филиал (уровень 1, раскрыт)
         br_first_child = branch_header_row + 1
